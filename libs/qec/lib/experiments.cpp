@@ -8,6 +8,7 @@
 #include "cudaq/qec/experiments.h"
 
 #include "device/memory_circuit.h"
+#include "cudaq/simulators.h"
 
 using namespace cudaqx;
 
@@ -100,10 +101,6 @@ sample_memory_circuit(const code &code, operation statePrep,
   auto &stabRound =
       code.get_operation<code::stabilizer_round>(operation::stabilizer_round);
 
-  cudaq::ExecutionContext ctx("");
-  ctx.noiseModel = &noise;
-  auto &platform = cudaq::get_platform();
-
   auto parity_x = code.get_parity_x();
   auto parity_z = code.get_parity_z();
   auto numData = code.get_num_data_qubits();
@@ -117,43 +114,65 @@ sample_memory_circuit(const code &code, operation statePrep,
 
   std::size_t numRows = numShots * numRounds;
   std::size_t numCols = numAncx + numAncz;
+  std::size_t numMeasRows = numShots * numRounds;
+  std::size_t numSyndRows = numShots * (numRounds - 1);
 
   // Allocate the tensor data for the syndromes and data.
   cudaqx::tensor<uint8_t> syndromeTensor({numShots * (numRounds - 1), numCols});
   cudaqx::tensor<uint8_t> dataResults({numShots, numData});
+  cudaqx::tensor<uint8_t> measuresTensor({numMeasRows, numCols});
+  std::vector<uint8_t> measurements, dataMeasures;
+
+  // Get the right memory circuit impl
+  std::function<void(const code::stabilizer_round &,
+                     const code::one_qubit_encoding &, std::size_t, std::size_t,
+                     std::size_t, std::size_t, const std::vector<std::size_t> &,
+                     const std::vector<std::size_t>)>
+      memCircKernel =
+          statePrep == operation::prepp || statePrep == operation::prepm
+              ? memory_circuit_mx
+              : memory_circuit_mz;
 
   // Run the memory circuit experiment
-  if (statePrep == operation::prep0 || statePrep == operation::prep1) {
-    // run z basis
-    for (std::size_t shot = 0; shot < numShots; shot++) {
-      platform.set_exec_ctx(&ctx);
-      memory_circuit_mz(stabRound, prep, numData, numAncx, numAncz, numRounds,
-                        xVec, zVec);
-      platform.reset_exec_ctx();
+  if (cudaq::get_simulator()->name() == "stim") {
+    // Stim has performant support for sampling when we have
+    // circuits with mid circuit measurements but no conditional feedback
+    auto counts = cudaq::sample({.shots = numShots, .noise = noise},
+                                memCircKernel, stabRound, prep, numData,
+                                numAncx, numAncz, numRounds, xVec, zVec);
+
+    for (auto &s : counts.sequential_data()) {
+      for (int i = 0; i < numRounds * (numAncx + numAncz); i++)
+        measurements.push_back(s[i] == '0' ? 0 : 1);
+      for (int i = numRounds * (numAncx + numAncz); i < s.size(); i++)
+        dataMeasures.push_back(s[i] == '0' ? 0 : 1);
+      printf("cudaq::sample bitstring - %s\n", s.c_str());
     }
-  } else if (statePrep == operation::prepp || statePrep == operation::prepm) {
-    // run z basis
-    for (std::size_t shot = 0; shot < numShots; shot++) {
-      platform.set_exec_ctx(&ctx);
-      memory_circuit_mx(stabRound, prep, numData, numAncx, numAncz, numRounds,
-                        xVec, zVec);
-      platform.reset_exec_ctx();
-    }
+
+    counts.dump();
+
+    dataResults.copy(dataMeasures.data());
+    measuresTensor.borrow(measurements.data());
   } else {
-    throw std::runtime_error(
-        "sample_memory_circuit_error - invalid requested state prep kernel.");
+
+    cudaq::ExecutionContext ctx("");
+    ctx.noiseModel = &noise;
+    auto &platform = cudaq::get_platform();
+
+    for (std::size_t shot = 0; shot < numShots; shot++) {
+      platform.set_exec_ctx(&ctx);
+      memCircKernel(stabRound, prep, numData, numAncx, numAncz, numRounds, xVec,
+                    zVec);
+      platform.reset_exec_ctx();
+    }
+
+    auto &dataMeasures = getMemoryCircuitDataMeasurements();
+    dataResults.copy(dataMeasures.data());
+
+    // Get the raw ancilla measurments
+    auto &measurements = getMemoryCircuitAncillaMeasurements();
+    measuresTensor.borrow(measurements.data());
   }
-
-  auto &dataMeasures = getMemoryCircuitDataMeasurements();
-  dataResults.copy(dataMeasures.data());
-
-  // Get the raw ancilla measurments
-  auto &measurements = getMemoryCircuitAncillaMeasurements();
-
-  std::size_t numMeasRows = numShots * numRounds;
-  std::size_t numSyndRows = numShots * (numRounds - 1);
-  cudaqx::tensor<uint8_t> measuresTensor({numMeasRows, numCols});
-  measuresTensor.borrow(measurements.data());
 
   // Convert to Syndromes
 
