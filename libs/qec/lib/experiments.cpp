@@ -134,7 +134,8 @@ sample_memory_circuit(const code &code, operation statePrep,
               : memory_circuit_mz;
 
   // Run the memory circuit experiment
-  if (cudaq::get_simulator()->name() == "stim") {
+  auto *maybeSim = cudaq::get_simulator();
+  if (maybeSim && maybeSim->name() == "stim") {
     // Stim has performant support for sampling when we have
     // circuits with mid circuit measurements but no conditional feedback
     auto counts = cudaq::sample({.shots = numShots, .noise = noise},
