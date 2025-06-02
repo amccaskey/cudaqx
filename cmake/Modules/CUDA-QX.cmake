@@ -165,3 +165,40 @@ function(cudaqx_add_pymodule module)
   pybind11_add_module(${module} ${ARGN})
   add_dependencies(cudaqx-pymodules ${module})
 endfunction()
+
+
+function(cudaq_declare_mlir_dialect_python_bindings)
+  cmake_parse_arguments(ARG
+    ""
+    "ROOT_DIR;ADD_TO_PARENT;TD_FILE;DIALECT_NAME"
+    "SOURCES;SOURCES_GLOB;DEPENDS"
+    ${ARGN})
+  # Sources.
+  set(_dialect_target "${ARG_ADD_TO_PARENT}.${ARG_DIALECT_NAME}")
+  declare_mlir_python_sources(${_dialect_target}
+    ROOT_DIR "${ARG_ROOT_DIR}"
+    ADD_TO_PARENT "${ARG_ADD_TO_PARENT}"
+    SOURCES "${ARG_SOURCES}"
+    SOURCES_GLOB "${ARG_SOURCES_GLOB}"
+  )
+
+  # Tablegen
+  if(ARG_TD_FILE)
+    set(tblgen_target "${_dialect_target}.tablegen")
+    set(td_file "${ARG_TD_FILE}")
+    set(dialect_filename "dialects/_${ARG_DIALECT_NAME}_ops_gen.py")
+    set(LLVM_TARGET_DEFINITIONS ${td_file})
+    mlir_tablegen("${dialect_filename}"
+      -gen-python-op-bindings -bind-dialect=${ARG_DIALECT_NAME}
+      DEPENDS ${ARG_DEPENDS}
+    )
+    add_public_tablegen_target(${tblgen_target})
+
+    # Generated.
+    declare_mlir_python_sources("${_dialect_target}.ops_gen"
+      ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}"
+      ADD_TO_PARENT "${_dialect_target}"
+      SOURCES "${dialect_filename}"
+    )
+  endif()
+endfunction()

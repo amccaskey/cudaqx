@@ -175,6 +175,7 @@ foreach(lib ${CUDAQX_ENABLE_LIBS})
   add_subdirectory(libs/${lib})
 endforeach()
 
+add_subdirectory(tools)
 
 # Custom targets
 # ==============================================================================
